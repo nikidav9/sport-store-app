@@ -1,79 +1,75 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { Redis } from 'ioredis'
 
 // Инициализация клиента PostgreSQL (Supabase)
 const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!)
 
-// Инициализация клиента Redis
-const redis = new Redis({
-  port: Number(process.env.REDIS_PORT),
-  host: process.env.REDIS_HOST,
-  password: process.env.REDIS_PASSWORD,
-})
+// In-memory кэш для списка товаров
+const productCache = new Map<string, { data: any[], timestamp: number }>();
+const CACHE_TTL = 5 * 60 * 1000; // 5 минут в миллисекундах
 
-const REDIS_PRODUCTS_KEY = 'products'
+const REDIS_PRODUCTS_KEY = 'products'; // Эта константа не используется с in-memory кэшем, но оставлю на всякий случай
 
 export const maxDuration = 60
 
-// GET /api/products - Получить список всех товаров (с кэшированием в Redis)
+// GET /api/products - Получить список всех товаров (с кэшированием)
 export async function GET(req: NextRequest) {
   try {
-    // Проверяем, есть ли товары в кэше Redis
-    const cachedProducts = await redis.get(REDIS_PRODUCTS_KEY)
-    if (cachedProducts) {
-      console.log('Returning products from Redis cache')
-      return NextResponse.json(JSON.parse(cachedProducts))
+    // Проверяем, есть ли товары в in-memory кэше и не устарели ли они
+    const cachedEntry = productCache.get(REDIS_PRODUCTS_KEY);
+    if (cachedEntry && (Date.now() - cachedEntry.timestamp < CACHE_TTL)) {
+      console.log('Returning products from in-memory cache');
+      return NextResponse.json(cachedEntry.data);
     }
 
-    console.log('Fetching products from Supabase')
-    // Если в кэше нет, получаем данные из Supabase
-    const { data, error } = await supabase.from('products').select('*')
+    console.log('Fetching products from Supabase');
+    const { data, error } = await supabase.from('products').select('*');
 
     if (error) {
-      console.error('Supabase fetch error:', error.message)
-      return NextResponse.json({ error: 'Failed to fetch products' }, { status: 500 })
+      console.error('Supabase fetch error:', error.message);
+      return NextResponse.json({ error: 'Failed to fetch products' }, { status: 500 });
     }
 
-    // Сохраняем полученные товары в кэш Redis на 1 час
-    await redis.set(REDIS_PRODUCTS_KEY, JSON.stringify(data), 'EX', 3600)
+    // Сохраняем полученные товары в in-memory кэш
+    productCache.set(REDIS_PRODUCTS_KEY, { data, timestamp: Date.now() });
+    console.log('Products cached in-memory');
 
-    return NextResponse.json(data)
+    return NextResponse.json(data);
   } catch (error) {
-    console.error('GET /api/products error:', error)
-    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 })
+    console.error('GET /api/products error:', error);
+    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 });
   }
 }
 
 // POST /api/products - Создать новый товар
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const { name, description, price, image_url } = body
+    const body = await req.json();
+    const { name, description, price, image_url } = body;
 
     if (!name || !price) {
-      return NextResponse.json({ error: 'Name and price are required' }, { status: 400 })
+      return NextResponse.json({ error: 'Name and price are required' }, { status: 400 });
     }
 
     const { data, error } = await supabase
       .from('products')
       .insert([{ name, description, price, image_url }])
       .select('*')
-      .single() // .single() вернет только одну строку или null
+      .single();
 
     if (error) {
-      console.error('Supabase insert error:', error.message)
-      return NextResponse.json({ error: 'Failed to create product' }, { status: 500 })
+      console.error('Supabase insert error:', error.message);
+      return NextResponse.json({ error: 'Failed to create product' }, { status: 500 });
     }
 
-    // Очищаем кэш Redis, так как данные изменились
-    await redis.del(REDIS_PRODUCTS_KEY)
-    console.log('Cache cleared after product creation')
+    // Очищаем in-memory кэш, так как данные изменились
+    productCache.delete(REDIS_PRODUCTS_KEY);
+    console.log('In-memory cache cleared after product creation');
 
-    return NextResponse.json(data, { status: 201 })
+    return NextResponse.json(data, { status: 201 });
   } catch (error) {
-    console.error('POST /api/products error:', error)
-    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 })
+    console.error('POST /api/products error:', error);
+    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 });
   }
 }
 
@@ -104,9 +100,9 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
         return NextResponse.json({ error: 'Product not found' }, { status: 404 });
     }
 
-    // Очищаем кэш Redis, так как данные изменились
-    await redis.del(REDIS_PRODUCTS_KEY);
-    console.log('Cache cleared after product update');
+    // Очищаем in-memory кэш, так как данные изменились
+    productCache.delete(REDIS_PRODUCTS_KEY);
+    console.log('In-memory cache cleared after product update');
 
     return NextResponse.json(data);
   } catch (error) {
@@ -130,11 +126,11 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
       return NextResponse.json({ error: 'Failed to delete product' }, { status: 500 });
     }
 
-    // Очищаем кэш Redis, так как данные изменились
-    await redis.del(REDIS_PRODUCTS_KEY);
-    console.log('Cache cleared after product deletion');
+    // Очищаем in-memory кэш, так как данные изменились
+    productCache.delete(REDIS_PRODUCTS_KEY);
+    console.log('In-memory cache cleared after product deletion');
 
-    return new Response(null, { status: 204 }); // No Content
+    return new NextResponse(null, { status: 204 }); // No Content
   } catch (error) {
     console.error('DELETE /api/products/:id error:', error);
     return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 });
