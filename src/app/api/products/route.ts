@@ -1,54 +1,142 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
+import { Redis } from 'ioredis'
 
-// Placeholder for Redis client initialization
-// const redisClient = createRedisClient()
+// Инициализация клиента PostgreSQL (Supabase)
+const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!)
 
-// Placeholder for DB client initialization
-// const dbClient = createDbClient()
+// Инициализация клиента Redis
+const redis = new Redis({
+  port: Number(process.env.REDIS_PORT),
+  host: process.env.REDIS_HOST,
+  password: process.env.REDIS_PASSWORD,
+})
+
+const REDIS_PRODUCTS_KEY = 'products'
 
 export const maxDuration = 60
 
-// GET all products (with caching)
+// GET /api/products - Получить список всех товаров (с кэшированием в Redis)
 export async function GET(req: NextRequest) {
   try {
-    // const cachedProducts = await redisClient.get('products')
-    // if (cachedProducts) {
-    //   return NextResponse.json(JSON.parse(cachedProducts))
-    // }
+    // Проверяем, есть ли товары в кэше Redis
+    const cachedProducts = await redis.get(REDIS_PRODUCTS_KEY)
+    if (cachedProducts) {
+      console.log('Returning products from Redis cache')
+      return NextResponse.json(JSON.parse(cachedProducts))
+    }
 
-    // const products = await dbClient.getProducts()
-    const products = [
-      { id: 1, name: 'Product 1', price: 100 },
-      { id: 2, name: 'Product 2', price: 200 },
-    ] // Dummy data
+    console.log('Fetching products from Supabase')
+    // Если в кэше нет, получаем данные из Supabase
+    const { data, error } = await supabase.from('products').select('*')
 
-    // await redisClient.set('products', JSON.stringify(products), { ex: 3600 }) // Cache for 1 hour
+    if (error) {
+      console.error('Supabase fetch error:', error.message)
+      return NextResponse.json({ error: 'Failed to fetch products' }, { status: 500 })
+    }
 
-    return NextResponse.json(products)
+    // Сохраняем полученные товары в кэш Redis на 1 час
+    await redis.set(REDIS_PRODUCTS_KEY, JSON.stringify(data), 'EX', 3600)
+
+    return NextResponse.json(data)
   } catch (error) {
-    console.error('Error fetching products:', error)
-    return NextResponse.json({ error: 'Failed to fetch products' }, { status: 500 })
+    console.error('GET /api/products error:', error)
+    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 })
   }
 }
 
-// POST create a new product
+// POST /api/products - Создать новый товар
 export async function POST(req: NextRequest) {
   try {
-    const { name, price } = await req.json()
+    const body = await req.json()
+    const { name, description, price, image_url } = body
 
-    if (!name || price === undefined) {
+    if (!name || !price) {
       return NextResponse.json({ error: 'Name and price are required' }, { status: 400 })
     }
 
-    // const newProduct = await dbClient.createProduct({ name, price })
-    const newProduct = { id: Date.now(), name, price } // Dummy data
+    const { data, error } = await supabase
+      .from('products')
+      .insert([{ name, description, price, image_url }])
+      .select('*')
+      .single() // .single() вернет только одну строку или null
 
-    // Invalidate cache for products
-    // await redisClient.del('products')
+    if (error) {
+      console.error('Supabase insert error:', error.message)
+      return NextResponse.json({ error: 'Failed to create product' }, { status: 500 })
+    }
 
-    return NextResponse.json(newProduct, { status: 201 })
+    // Очищаем кэш Redis, так как данные изменились
+    await redis.del(REDIS_PRODUCTS_KEY)
+    console.log('Cache cleared after product creation')
+
+    return NextResponse.json(data, { status: 201 })
   } catch (error) {
-    console.error('Error creating product:', error)
-    return NextResponse.json({ error: 'Failed to create product' }, { status: 500 })
+    console.error('POST /api/products error:', error)
+    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 })
+  }
+}
+
+// PUT /api/products/:id - Обновить существующий товар
+export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
+  const productId = params.id;
+  try {
+    const body = await req.json();
+    const { name, description, price, image_url } = body;
+
+    if (!productId) {
+       return NextResponse.json({ error: 'Product ID is required' }, { status: 400 });
+    }
+
+    const { data, error } = await supabase
+      .from('products')
+      .update({ name, description, price, image_url })
+      .eq('id', productId)
+      .select('*')
+      .single();
+
+    if (error) {
+      console.error('Supabase update error:', error.message);
+      return NextResponse.json({ error: 'Failed to update product' }, { status: 500 });
+    }
+
+    if (!data) {
+        return NextResponse.json({ error: 'Product not found' }, { status: 404 });
+    }
+
+    // Очищаем кэш Redis, так как данные изменились
+    await redis.del(REDIS_PRODUCTS_KEY);
+    console.log('Cache cleared after product update');
+
+    return NextResponse.json(data);
+  } catch (error) {
+    console.error('PUT /api/products/:id error:', error);
+    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 });
+  }
+}
+
+// DELETE /api/products/:id - Удалить товар
+export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
+  const productId = params.id;
+  try {
+    if (!productId) {
+       return NextResponse.json({ error: 'Product ID is required' }, { status: 400 });
+    }
+
+    const { error } = await supabase.from('products').delete().eq('id', productId);
+
+    if (error) {
+      console.error('Supabase delete error:', error.message);
+      return NextResponse.json({ error: 'Failed to delete product' }, { status: 500 });
+    }
+
+    // Очищаем кэш Redis, так как данные изменились
+    await redis.del(REDIS_PRODUCTS_KEY);
+    console.log('Cache cleared after product deletion');
+
+    return new Response(null, { status: 204 }); // No Content
+  } catch (error) {
+    console.error('DELETE /api/products/:id error:', error);
+    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 });
   }
 }
