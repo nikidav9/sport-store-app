@@ -1,60 +1,103 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
-import { updateProductSchema } from '@/lib/validations/product'
-import { z } from 'zod'
 
-export const maxDuration = 60
+import { NextRequest, NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase';
+import redisClient from '@/lib/redis';
 
-interface ProductRouteContext {
-  params: { id: string }
-}
+const PRODUCTS_CACHE_KEY = 'products';
 
-export async function GET(req: NextRequest, { params }: ProductRouteContext) {
+// GET /api/products/[id] - Получить товар по ID
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const product = await prisma.product.findUnique({
-      where: { id: params.id },
-    })
+    const id = params.id;
 
-    if (!product) {
-      return NextResponse.json({ error: 'Товар не найден' }, { status: 404 })
+    const { data, error } = await supabase
+      .from('products')
+      .select('id, name, description, price, created_at, updated_at')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      console.error(`Supabase error fetching product ${id}:`, error);
+      if (error.code === 'PGRST116') { // No Row Found
+        return NextResponse.json({ error: 'Product not found' }, { status: 404 });
+      }
+      return NextResponse.json({ error: 'Failed to fetch product' }, { status: 500 });
     }
 
-    return NextResponse.json(product)
+    return NextResponse.json(data);
   } catch (error) {
-    console.error(`Ошибка при получении товара ${params.id}:`, error)
-    return NextResponse.json({ error: 'Не удалось получить товар' }, { status: 500 })
+    console.error('Error processing request:', error);
+    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 });
   }
 }
 
-export async function PUT(req: NextRequest, { params }: ProductRouteContext) {
+// PUT /api/products/[id] - Обновить товар
+export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const body = await req.json()
-    const validatedData = updateProductSchema.parse(body)
+    const id = params.id;
+    const body = await req.json();
+    const { name, description, price } = body;
 
-    const product = await prisma.product.update({
-      where: { id: params.id },
-      data: validatedData,
-    })
-
-    return NextResponse.json(product)
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      return NextResponse.json({ error: error.errors }, { status: 400 })
+    if (!name && !description && !price) {
+      return NextResponse.json({ error: 'No fields provided for update' }, { status: 400 });
     }
-    console.error(`Ошибка при обновлении товара ${params.id}:`, error)
-    return NextResponse.json({ error: 'Не удалось обновить товар' }, { status: 500 })
+
+    const updateData: { name?: string; description?: string; price?: number; updated_at: string } = {
+      ...body,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from('products')
+      .update(updateData)
+      .eq('id', id)
+      .select('id, name, description, price, created_at, updated_at')
+      .single();
+
+    if (error) {
+      console.error(`Supabase error updating product ${id}:`, error);
+      if (error.code === 'PGRST116') { // No Row Found
+        return NextResponse.json({ error: 'Product not found' }, { status: 404 });
+      }
+      return NextResponse.json({ error: 'Failed to update product' }, { status: 500 });
+    }
+
+    // Инвалидируем кэш
+    await redisClient.del(PRODUCTS_CACHE_KEY);
+    console.log(`Cache invalidated after product update (ID: ${id})`);
+
+    return NextResponse.json(data);
+  } catch (error) {
+    console.error('Error processing request:', error);
+    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 });
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: ProductRouteContext) {
+// DELETE /api/products/[id] - Удалить товар
+export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    await prisma.product.delete({
-      where: { id: params.id },
-    })
+    const id = params.id;
 
-    return new NextResponse(null, { status: 204 })
+    const { error } = await supabase
+      .from('products')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error(`Supabase error deleting product ${id}:`, error);
+       if (error.code === 'PGRST116') { // No Row Found
+        return NextResponse.json({ error: 'Product not found' }, { status: 404 });
+      }
+      return NextResponse.json({ error: 'Failed to delete product' }, { status: 500 });
+    }
+
+    // Инвалидируем кэш
+    await redisClient.del(PRODUCTS_CACHE_KEY);
+    console.log(`Cache invalidated after product deletion (ID: ${id})`);
+
+    return new Response(null, { status: 204 });
   } catch (error) {
-    console.error(`Ошибка при удалении товара ${params.id}:`, error)
-    return NextResponse.json({ error: 'Не удалось удалить товар' }, { status: 500 })
+    console.error('Error processing request:', error);
+    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 });
   }
 }
