@@ -3,15 +3,19 @@ import { createClient } from '@supabase/supabase-js'
 import { updateProductSchema } from '@/lib/validations/product'
 import { z } from 'zod'
 
-const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!)
-
+export const dynamic = 'force-dynamic'
 export const maxDuration = 60
+
+function getSupabase() {
+  return createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!)
+}
 
 interface ProductRouteContext {
   params: { id: string }
 }
 
 export async function GET(_req: NextRequest, { params }: ProductRouteContext) {
+  const supabase = getSupabase()
   const { data, error } = await supabase
     .from('products')
     .select('*')
@@ -26,6 +30,7 @@ export async function GET(_req: NextRequest, { params }: ProductRouteContext) {
 
 export async function PUT(req: NextRequest, { params }: ProductRouteContext) {
   try {
+    const supabase = getSupabase()
     const body = await req.json()
     const validatedData = updateProductSchema.parse(body)
 
@@ -49,6 +54,7 @@ export async function PUT(req: NextRequest, { params }: ProductRouteContext) {
 }
 
 export async function DELETE(_req: NextRequest, { params }: ProductRouteContext) {
+  const supabase = getSupabase()
   const { error } = await supabase.from('products').delete().eq('id', params.id)
 
   if (error) {
