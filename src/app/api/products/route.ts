@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!)
+export const dynamic = 'force-dynamic'
+export const maxDuration = 60
 
-// In-memory cache (ioredis не работает на Vercel serverless)
+function getSupabase() {
+  return createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!)
+}
+
 const cache = new Map<string, { data: unknown; expiresAt: number }>()
 const CACHE_TTL = 60 * 60 * 1000
 
@@ -17,13 +21,11 @@ function setCache(key: string, data: unknown) {
   cache.set(key, { data, expiresAt: Date.now() + CACHE_TTL })
 }
 
-export const maxDuration = 60
-
 export async function GET() {
   const cached = getCache('products')
   if (cached) return NextResponse.json(cached)
 
-  const { data, error } = await supabase.from('products').select('*')
+  const { data, error } = await getSupabase().from('products').select('*')
   if (error) return NextResponse.json({ error: 'Failed to fetch products' }, { status: 500 })
 
   setCache('products', data)
@@ -38,7 +40,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Name and price are required' }, { status: 400 })
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await getSupabase()
     .from('products')
     .insert([{ name, description, price, image_url }])
     .select('*')
