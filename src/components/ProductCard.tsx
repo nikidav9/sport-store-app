@@ -1,26 +1,24 @@
-'use client'
-
-interface Product {
-  id: number;
-  name: string;
-  price: number;
-  imageUrl: string;
-  description: string;
-}
+'use client';
 
 interface ProductCardProps {
-  product: Product;
+  product: {
+    id: string;
+    name: string;
+    price: number;
+    description: string;
+    imageUrl: string;
+  };
 }
 
 export default function ProductCard({ product }: ProductCardProps) {
   return (
-    <div className="border rounded-lg shadow-md p-6 flex flex-col items-center text-center max-w-sm mx-auto my-8">
-      <img src={product.imageUrl} alt={product.name} className="w-full h-64 object-cover mb-4 rounded-lg" />
-      <h3 className="text-2xl font-bold mb-2">{product.name}</h3>
-      <p className="text-xl text-gray-700 mb-4">${product.price}</p>
-      <p className="text-gray-600 mb-6">{product.description}</p>
-      <button className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded mt-auto">
-        Add to Cart
+    <div className="border rounded-lg p-4 shadow-md bg-white">
+      <img src={product.imageUrl} alt={product.name} className="w-full h-48 object-cover rounded-md mb-4" />
+      <h3 className="text-xl font-semibold mb-2">{product.name}</h3>
+      <p className="text-gray-700 mb-2">{product.description}</p>
+      <p className="text-lg font-bold text-blue-600">{product.price} ₽</p>
+      <button className="mt-4 w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition duration-300">
+        Добавить в корзину
       </button>
     </div>
   );
